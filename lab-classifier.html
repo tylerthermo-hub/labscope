@@ -1062,11 +1062,11 @@ async function runAnalysis() {
           retries++;
         } else if (retries < maxRetries) {
           const backoff = 3000 * (retries + 1);
-          log(`↺ ${label} — retrying in ${backoff/1000}s (attempt ${retries+1}/${maxRetries})`, 'warn');
+          log(`↺ ${label} — retrying in ${backoff/1000}s (attempt ${retries+1}/${maxRetries}) — error: ${errStr}`, 'warn');
           await interruptibleSleep(backoff);
           retries++;
         } else {
-          log(`✗ ${label} — failed after ${maxRetries} retries: ${errStr.substring(0, 120)}`, 'err');
+          log(`✗ ${label} — failed after ${maxRetries} retries: ${errStr}`, 'err');
           return null;
         }
       }
@@ -1252,8 +1252,9 @@ Respond ONLY with valid JSON (no markdown, no backticks) in exactly this format:
 
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));
-    // Throw the raw error object as a JSON string so callers can parse rate limit info
-    throw new Error(JSON.stringify(err.error || err));
+    const errPayload = err.error || err;
+    // Include HTTP status in the thrown error so it's visible in the log
+    throw new Error(JSON.stringify({ http_status: response.status, ...errPayload }));
   }
 
   const data = await response.json();

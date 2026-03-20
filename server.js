@@ -3,17 +3,22 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 
-// Set your Anthropic API key here, or via the ANTHROPIC_API_KEY environment variable
-const API_KEY = process.env.ANTHROPIC_API_KEY || 'YOUR_API_KEY_HERE';
+const API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const PORT = process.env.PORT || 3000;
 
+// Startup diagnostics
+if (!API_KEY) {
+  console.error('ERROR: ANTHROPIC_API_KEY environment variable is not set.');
+  console.error('Set it in Railway under your project → Variables tab.');
+} else {
+  console.log(`API key loaded: ${API_KEY.substring(0, 12)}... (${API_KEY.length} chars)`);
+}
+
 const server = http.createServer((req, res) => {
-  // Allow requests from any origin (needed for browser access)
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  // Handle preflight
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
     res.end();
@@ -33,8 +38,25 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Health check — visit /health to confirm server + API key status
+  if (req.method === 'GET' && req.url === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      status: 'ok',
+      api_key_set: !!API_KEY,
+      api_key_prefix: API_KEY ? API_KEY.substring(0, 12) + '...' : 'NOT SET'
+    }));
+    return;
+  }
+
   // Proxy API calls to Anthropic
   if (req.method === 'POST' && req.url === '/api') {
+    if (!API_KEY) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'Server error: ANTHROPIC_API_KEY is not configured on the server.' } }));
+      return;
+    }
+
     let body = '';
     req.on('data', chunk => body += chunk);
     req.on('end', () => {
@@ -54,15 +76,18 @@ const server = http.createServer((req, res) => {
         let data = '';
         apiRes.on('data', chunk => data += chunk);
         apiRes.on('end', () => {
+          if (apiRes.statusCode !== 200) {
+            console.error(`Anthropic API returned ${apiRes.statusCode}:`, data.substring(0, 300));
+          }
           res.writeHead(apiRes.statusCode, { 'Content-Type': 'application/json' });
           res.end(data);
         });
       });
 
       apiReq.on('error', e => {
-        console.error('Anthropic API error:', e.message);
-        res.writeHead(502);
-        res.end(JSON.stringify({ error: { message: 'Upstream API error: ' + e.message } }));
+        console.error('Anthropic request error:', e.message);
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Could not reach Anthropic API: ' + e.message } }));
       });
 
       apiReq.write(body);
@@ -77,7 +102,5 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, () => {
   console.log(`LabScope running at http://localhost:${PORT}`);
-  if (API_KEY === 'YOUR_API_KEY_HERE') {
-    console.warn('Warning: No API key set. Set ANTHROPIC_API_KEY or edit server.js');
-  }
+  console.log(`Health check: http://localhost:${PORT}/health`);
 });
