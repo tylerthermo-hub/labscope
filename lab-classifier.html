@@ -1235,9 +1235,12 @@ Respond ONLY with valid JSON (no markdown, no backticks) in exactly this format:
   // Auto-detect environment:
   // - localhost → route through local proxy server at /api (avoids CORS, key held server-side)
   // - elsewhere (claude.ai, hosted) → call Anthropic directly (key injected by platform or entered manually)
-  const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-  const apiUrl = isLocalhost ? '/api' : 'https://api.anthropic.com/v1/messages';
-  const extraHeaders = (!isLocalhost && getApiKey()) ? { "x-api-key": getApiKey() } : {};
+  const manualKey = getApiKey();
+  // Use the local proxy (/api) whenever no manual key is provided.
+  // This covers localhost, Railway, and any other hosted environment.
+  // Only call Anthropic directly if the user has explicitly entered their own API key.
+  const apiUrl = manualKey ? 'https://api.anthropic.com/v1/messages' : '/api';
+  const extraHeaders = manualKey ? { "x-api-key": manualKey } : {};
 
   const response = await fetch(apiUrl, {
     method: "POST",
@@ -1372,9 +1375,12 @@ Respond ONLY with valid JSON (no markdown, no backticks) in exactly this format:
   "sources": ["url1", "url2"]
 }`;
 
-  const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-  const apiUrl = isLocalhost ? '/api' : 'https://api.anthropic.com/v1/messages';
-  const extraHeaders = (!isLocalhost && getApiKey()) ? { "x-api-key": getApiKey() } : {};
+  const manualKey = getApiKey();
+  // Use the local proxy (/api) whenever no manual key is provided.
+  // This covers localhost, Railway, and any other hosted environment.
+  // Only call Anthropic directly if the user has explicitly entered their own API key.
+  const apiUrl = manualKey ? 'https://api.anthropic.com/v1/messages' : '/api';
+  const extraHeaders = manualKey ? { "x-api-key": manualKey } : {};
 
   const response = await fetch(apiUrl, {
     method: "POST",
