@@ -1057,12 +1057,16 @@ async function runAnalysis() {
         } catch (_) {}
 
         if (rateLimitResetMs) {
-          log(`⏳ Rate limit hit. Waiting 30s before retrying ${label}…`, 'warn');
-          await interruptibleSleep(30000);
+          log(`⏳ Rate limit hit. Waiting 60s before retrying ${label}…`, 'warn');
+          await interruptibleSleep(60000);
           retries++;
         } else if (retries < maxRetries) {
-          const backoff = 3000 * (retries + 1);
-          log(`↺ ${label} — retrying in ${backoff/1000}s (attempt ${retries+1}/${maxRetries}) — error: ${errStr}`, 'warn');
+          // Check if it's a 429 token-per-minute limit (has http_status 429 but no resetsAt)
+          let is429 = false;
+          try { is429 = JSON.parse(errStr).http_status === 429; } catch(_) {}
+          const backoff = is429 ? 60000 : 3000 * (retries + 1);
+          const backoffLabel = is429 ? '60s (token rate limit)' : `${backoff/1000}s`;
+          log(`↺ ${label} — retrying in ${backoffLabel} (attempt ${retries+1}/${maxRetries}) — error: ${errStr}`, 'warn');
           await interruptibleSleep(backoff);
           retries++;
         } else {
@@ -1127,7 +1131,7 @@ async function runAnalysis() {
 
     // Pause between institutions
     if (i < institutions.length - 1 && !stopRequested) {
-      await interruptibleSleep(5000);
+      await interruptibleSleep(15000);
     }
   }
 
@@ -1183,7 +1187,9 @@ async function analyzeInstitution(name, location) {
   const locationStr = location ? ` located in ${location}` : '';
   const prompt = `You are a scientific research tool. Analyze the institution "${name}"${locationStr}.
 
-Using your knowledge and web search capabilities, determine:
+Use web search to research this institution. Limit yourself to a maximum of 6 targeted searches total — prioritise the institution's own website, then LinkedIn/directory pages for contacts, then PubMed for NGS platform. Do not search broadly; each search should have a clear specific goal.
+
+Determine:
 
 1. TESTING CAPABILITIES (answer true/false for each):
    - solid_tumor_general: Does this lab/institution perform solid tumor testing (general oncology/pathology/molecular testing for tumors)?
