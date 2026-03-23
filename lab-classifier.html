@@ -1208,13 +1208,31 @@ IMPORTANT — CONSISTENCY CHECK: Before finalising your JSON, re-read your testi
      Specific models to look for: Illumina NovaSeq 6000/X, NextSeq 550/2000, MiSeq, HiSeq; PacBio Sequel II/IIe/Revio; Oxford Nanopore PromethION/MinION/GridION; Ion Torrent Genexus/S5; 10x Genomics Chromium; Element Biosciences AVITI; MGI DNBSEQ.
      If multiple platforms are found, list all of them. If only the brand is found (e.g. "Illumina" without a model), state the brand. Say "Unknown" only after exhausting all search strategies above.
 
-3. CONTACTS: Search thoroughly to find at least 3 relevant contacts at this institution.
-   - PRIORITY ORDER: First list any Laboratory Director(s) or anyone with "Director" or "Laboratory" in their title. Then list pathologists, oncologists, genomics leads, research directors, department heads.
-   - Search the institution's website, faculty/staff directory, LinkedIn, and any published papers or press releases to find real names, emails, and direct phone numbers.
-   - For each contact you MUST attempt to find their email and phone — do not give up after one search. Try searching "[name] [institution] email", "[institution] staff directory", "[institution] contact us", etc.
-   - Email formats to try: firstname.lastname@institution.edu/com, flastname@institution.edu/com, or check the institution's published contact pages directly.
-   - Also find the general laboratory phone number (main switchboard or lab line, not a personal direct line). Search "[institution name] phone number", "[institution name] contact", or check their website's Contact Us page.
-   - Only mark email or phone as "N/A" after genuinely exhausting search attempts.
+3. CONTACTS: Search aggressively across multiple sources to find the most relevant contacts at this institution.
+
+   PRIORITY TITLES TO FIND (in order):
+   - "Lab Director" or "Laboratory Director" (always search for this first)
+   - "NGS Lead", "NGS Director", "Genomics Lead", or "Team Lead"
+   - If the lab performs infectious disease testing: "Infectious Disease Director" or "Director of Infectious Disease"
+   - If the lab performs pathology: "Chief of Pathology", "Chair of Pathology", or "Medical Director of Pathology"
+   - Then: other relevant roles such as Lab Manager, Research Director, Senior Scientist, Department Head
+
+   SEARCH STRATEGY — use ALL of the following sources:
+   a) Institution website: check "About", "Team", "Leadership", "Staff Directory", or "Contact" pages
+   b) LinkedIn: search "[institution name] Laboratory Director", "[institution name] NGS Lead", etc.
+   c) ZoomInfo: search "[institution name]" on zoominfo.com — it lists verified business contacts with emails and direct dials
+   d) Contact databases: also try rocketreach.co, apollo.io, and hunter.io for "[name] [institution]" to find verified email addresses
+   e) Published papers: authors from recent papers often list their institutional email in the correspondence section
+   f) Press releases and news articles mentioning staff names
+
+   EMAIL SOURCING: For each contact found, try to find their email via:
+   - ZoomInfo profile (most reliable for business emails)
+   - RocketReach or Apollo.io profile
+   - The institution's own published staff directory
+   - Pattern-matching from known institutional email formats (e.g. if one contact is john.doe@lab.com, try firstname.lastname@lab.com for others)
+   - Only mark email as "N/A" after trying all of the above
+
+   Also find the general laboratory phone number (main switchboard or lab line). Search "[institution name] phone", "[institution name] contact us", or check their website directly.
 
 Respond ONLY with valid JSON (no markdown, no backticks) in exactly this format:
 {
@@ -1242,17 +1260,22 @@ Respond ONLY with valid JSON (no markdown, no backticks) in exactly this format:
   // - localhost → route through local proxy server at /api (avoids CORS, key held server-side)
   // - elsewhere (claude.ai, hosted) → call Anthropic directly (key injected by platform or entered manually)
   const manualKey = getApiKey();
-  // Use the local proxy (/api) whenever no manual key is provided.
-  // This covers localhost, Railway, and any other hosted environment.
-  // Only call Anthropic directly if the user has explicitly entered their own API key.
-  const apiUrl = manualKey ? 'https://api.anthropic.com/v1/messages' : '/api';
+  // Routing logic:
+  // - If a manual API key is entered: call Anthropic directly (standalone use)
+  // - If served from our own server (localhost or Railway): use the /api proxy
+  // - Otherwise (e.g. inside claude.ai iframe): call Anthropic directly, key injected by platform
+  const isOwnServer = window.location.hostname === 'localhost'
+    || window.location.hostname === '127.0.0.1'
+    || window.location.hostname.endsWith('.railway.app')
+    || window.location.hostname.endsWith('.up.railway.app');
+  const apiUrl = (isOwnServer && !manualKey) ? '/api' : 'https://api.anthropic.com/v1/messages';
   const extraHeaders = manualKey ? { "x-api-key": manualKey } : {};
 
   const response = await fetch(apiUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...extraHeaders },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-6",
       max_tokens: 4000,
       tools: [{ type: "web_search_20250305", name: "web_search" }],
       messages: [{ role: "user", content: prompt }]
@@ -1297,7 +1320,7 @@ async function parseOrRetry(fullText, apiUrl, extraHeaders) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...extraHeaders },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 4000,
         messages: [
           { role: 'user', content: `You previously produced this output but it could not be parsed as JSON:\n\n${fullText}\n\nPlease re-emit ONLY the JSON object from your response — no explanation, no markdown, no backticks. Start your reply with { and end with }.` }
@@ -1335,13 +1358,19 @@ async function refineInstitution(name, location, prior) {
   const missingContactInfo = (prior.contacts || []).filter(c => c.email === 'N/A' || c.phone === 'N/A');
   if (missingContactInfo.length > 0) {
     const names = missingContactInfo.map(c => c.name).join(', ');
-    gaps.push(`- Missing contact details for: ${names}. Try searching each person's name + institution on LinkedIn, the institution staff directory, and published papers for email addresses.`);
+    gaps.push(`- Missing emails/phones for: ${names}. Search ZoomInfo (zoominfo.com), RocketReach (rocketreach.co), Apollo.io, and hunter.io for each person. Also try LinkedIn and any published papers where they may have listed their institutional email.`);
   }
   if (!prior.lab_phone || prior.lab_phone === 'N/A') {
     gaps.push('- General lab phone number: not found yet. Search "[institution name] phone", "[institution name] contact us", and check their website directly.');
   }
+  const priorityTitles = ['laboratory director', 'lab director', 'ngs lead', 'ngs director', 'genomics lead', 'team lead', 'infectious disease director', 'chief of pathology', 'chair of pathology'];
+  const foundTitles = (prior.contacts || []).map(c => (c.title||'').toLowerCase());
+  const missingPriority = priorityTitles.filter(t => !foundTitles.some(f => f.includes(t.split(' ')[0]) && f.includes(t.split(' ').pop())));
+  if (missingPriority.length > 0) {
+    gaps.push(`- Priority contacts not yet found: ${missingPriority.join(', ')}. Search LinkedIn, ZoomInfo, and the institution website specifically for these roles.`);
+  }
   if ((prior.contacts || []).length < 3) {
-    gaps.push('- Need more contacts: only ' + (prior.contacts||[]).length + ' found so far. Search for additional lab directors, pathologists, or department heads.');
+    gaps.push('- Need more contacts: only ' + (prior.contacts||[]).length + ' found so far. Search ZoomInfo and LinkedIn for "[institution name] director" or "[institution name] lab manager".');
   }
 
   const gapText = gaps.length > 0
@@ -1355,7 +1384,7 @@ ${JSON.stringify(prior, null, 2)}
 
 ${gapText}
 
-Do additional targeted web searches to find anything missing or improvable above. Then return a COMPLETE updated record — include everything from the first pass plus any new findings.
+Do additional targeted web searches to find anything missing or improvable above. For contacts specifically, focus on ZoomInfo, RocketReach, Apollo.io, LinkedIn, and the institution's own staff directory to find verified email addresses and direct phone numbers. Then return a COMPLETE updated record — include everything from the first pass plus any new findings.
 
 IMPORTANT — CONSISTENCY CHECK: Re-read your testing_notes. If it mentions infectious disease, microbiology, molecular diagnostics, oncology, tumor, cancer, hematology, or NGS — the corresponding boolean must be true.
 
@@ -1382,17 +1411,22 @@ Respond ONLY with valid JSON (no markdown, no backticks) in exactly this format:
 }`;
 
   const manualKey = getApiKey();
-  // Use the local proxy (/api) whenever no manual key is provided.
-  // This covers localhost, Railway, and any other hosted environment.
-  // Only call Anthropic directly if the user has explicitly entered their own API key.
-  const apiUrl = manualKey ? 'https://api.anthropic.com/v1/messages' : '/api';
+  // Routing logic:
+  // - If a manual API key is entered: call Anthropic directly (standalone use)
+  // - If served from our own server (localhost or Railway): use the /api proxy
+  // - Otherwise (e.g. inside claude.ai iframe): call Anthropic directly, key injected by platform
+  const isOwnServer = window.location.hostname === 'localhost'
+    || window.location.hostname === '127.0.0.1'
+    || window.location.hostname.endsWith('.railway.app')
+    || window.location.hostname.endsWith('.up.railway.app');
+  const apiUrl = (isOwnServer && !manualKey) ? '/api' : 'https://api.anthropic.com/v1/messages';
   const extraHeaders = manualKey ? { "x-api-key": manualKey } : {};
 
   const response = await fetch(apiUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...extraHeaders },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-6",
       max_tokens: 4000,
       tools: [{ type: "web_search_20250305", name: "web_search" }],
       messages: [{ role: "user", content: prompt }]
