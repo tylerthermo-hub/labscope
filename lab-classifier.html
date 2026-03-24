@@ -147,6 +147,69 @@
     flex-shrink: 0;
   }
 
+  /* MODE TABS */
+  .mode-tabs {
+    display: flex;
+    gap: 0;
+    margin-bottom: 0;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 0;
+  }
+  .mode-tab {
+    padding: 11px 24px;
+    font-family: 'DM Mono', monospace;
+    font-size: 12px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    border-bottom: none;
+    background: var(--surface2);
+    color: var(--text-muted);
+    margin-right: -1px;
+    transition: all 0.15s;
+  }
+  .mode-tab.active {
+    background: var(--surface);
+    color: var(--accent);
+    border-color: var(--border);
+    border-bottom: 1px solid var(--surface);
+    margin-bottom: -1px;
+    z-index: 1;
+  }
+  .mode-tab:hover:not(.active) { color: var(--text); background: var(--surface); }
+  .mode-panel {
+    display: none;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-top: none;
+    padding: 32px;
+    margin-bottom: 32px;
+  }
+  .mode-panel.active { display: block; }
+
+  /* SINGLE ENTRY */
+  .single-entry-grid {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 16px;
+    margin-bottom: 20px;
+  }
+  @media (max-width: 600px) { .single-entry-grid { grid-template-columns: 1fr; } }
+  .single-entry-grid input {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: 'DM Mono', monospace;
+    font-size: 13px;
+    padding: 11px 14px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .single-entry-grid input:focus { border-color: var(--accent); }
+  .single-entry-grid input::placeholder { color: var(--text-dim); }
+
   /* UPLOAD ZONE */
   .upload-section {
     margin-bottom: 40px;
@@ -828,9 +891,31 @@
     </div>
   </div>
 
-  <!-- UPLOAD -->
-  <div class="upload-section">
-    <div class="upload-zone" id="uploadZone">
+  <!-- MODE TABS -->
+  <div class="mode-tabs">
+    <button class="mode-tab active" id="tabSingle" onclick="switchMode('single')">Single Institution</button>
+    <button class="mode-tab" id="tabBulk" onclick="switchMode('bulk')">Bulk Upload</button>
+  </div>
+
+  <!-- SINGLE ENTRY PANEL -->
+  <div class="mode-panel active" id="panelSingle">
+    <div class="single-entry-grid">
+      <input type="text" id="singleName" placeholder="Institution / Lab name (required)" autocomplete="off">
+      <input type="text" id="singleLocation" placeholder="Location (optional)" autocomplete="off">
+    </div>
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+      <button class="btn-run" id="runBtnSingle" onclick="runSingle()">
+        <span>▶ Run Analysis</span>
+      </button>
+      <button class="btn-stop" id="stopBtnSingle" onclick="stopAnalysis()">
+        <span>■ Stop</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- BULK UPLOAD PANEL -->
+  <div class="mode-panel" id="panelBulk">
+    <div class="upload-zone" id="uploadZone" style="margin-bottom:24px;">
       <span class="upload-icon">🧬</span>
       <div class="upload-title">Upload Institution List</div>
       <div class="upload-sub">
@@ -840,31 +925,29 @@
       <button class="btn-upload" onclick="document.getElementById('fileInput').click()">Choose File</button>
       <input type="file" id="fileInput" accept=".xlsx,.xls,.csv">
     </div>
-  </div>
-
-  <!-- CONFIG -->
-  <div class="config-panel" id="configPanel">
-    <div class="config-title">⚙ Configuration</div>
-    <div class="config-grid">
-      <div class="config-field">
-        <label>Name Column</label>
-        <select id="nameCol"></select>
+    <div id="configInner" style="display:none;">
+      <div style="font-family:'Syne',sans-serif;font-size:13px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--text-muted);margin-bottom:20px;">⚙ Configuration</div>
+      <div class="config-grid">
+        <div class="config-field">
+          <label>Name Column</label>
+          <select id="nameCol"></select>
+        </div>
+        <div class="config-field">
+          <label>Location Column (optional)</label>
+          <select id="locCol"></select>
+        </div>
       </div>
-      <div class="config-field">
-        <label>Location Column (optional)</label>
-        <select id="locCol"></select>
+      <div class="lab-count" id="labCount"></div>
+      <div class="preview-list" id="previewList"></div>
+      <br>
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+        <button class="btn-run" id="runBtn" onclick="runAnalysis()">
+          <span>▶ Run Analysis</span>
+        </button>
+        <button class="btn-stop" id="stopBtn" onclick="stopAnalysis()">
+          <span>■ Stop</span>
+        </button>
       </div>
-    </div>
-    <div class="lab-count" id="labCount"></div>
-    <div class="preview-list" id="previewList"></div>
-    <br>
-    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
-      <button class="btn-run" id="runBtn" onclick="runAnalysis()">
-        <span>▶ Run Analysis</span>
-      </button>
-      <button class="btn-stop" id="stopBtn" onclick="stopAnalysis()">
-        <span>■ Stop</span>
-      </button>
     </div>
   </div>
 
@@ -984,7 +1067,7 @@ function setupConfig() {
     return `<span class="preview-chip">${String(val).substring(0,35)}</span>`;
   }).join('') + (parsedData.length > 8 ? `<span class="preview-chip">+${parsedData.length-8} more</span>` : '');
 
-  document.getElementById('configPanel').classList.add('visible');
+  document.getElementById('configInner').style.display = 'block';
   // update preview when col changes
   nameCol.onchange = () => {
     preview.innerHTML = parsedData.slice(0,8).map(r => {
@@ -1006,25 +1089,51 @@ function log(text, type = 'info') {
   feed.scrollTop = feed.scrollHeight;
 }
 
+// ---- MODE SWITCHING ----
+function switchMode(mode) {
+  document.getElementById('tabSingle').classList.toggle('active', mode === 'single');
+  document.getElementById('tabBulk').classList.toggle('active', mode === 'bulk');
+  document.getElementById('panelSingle').classList.toggle('active', mode === 'single');
+  document.getElementById('panelBulk').classList.toggle('active', mode === 'bulk');
+}
+
+// ---- SINGLE INSTITUTION RUN ----
+async function runSingle() {
+  const name = document.getElementById('singleName').value.trim();
+  if (!name) {
+    document.getElementById('singleName').focus();
+    document.getElementById('singleName').style.borderColor = '#cc2222';
+    setTimeout(() => document.getElementById('singleName').style.borderColor = '', 1500);
+    return;
+  }
+  const location = document.getElementById('singleLocation').value.trim();
+  // Feed into the shared pipeline as a one-item institutions array
+  await runPipeline([{ name, location }],
+    document.getElementById('runBtnSingle'),
+    document.getElementById('stopBtnSingle')
+  );
+}
+
 // ---- ANALYSIS ----
 async function runAnalysis() {
   const nameColIdx = parseInt(document.getElementById('nameCol').value);
   const locColIdx = document.getElementById('locCol').value !== '' ? parseInt(document.getElementById('locCol').value) : null;
-
   if (isNaN(nameColIdx)) return alert('Please select the name column.');
-
-  // API key is either entered manually or injected by the platform (claude.ai)
-
   const institutions = parsedData.map(r => ({
     name: String(r[nameColIdx] || '').trim(),
     location: locColIdx !== null ? String(r[locColIdx] || '').trim() : ''
   })).filter(i => i.name);
-
   if (institutions.length === 0) return alert('No institution names found.');
+  await runPipeline(institutions,
+    document.getElementById('runBtn'),
+    document.getElementById('stopBtn')
+  );
+}
 
+// ---- SHARED ANALYSIS PIPELINE ----
+async function runPipeline(institutions, runBtn, stopBtn) {
   stopRequested = false;
-  document.getElementById('runBtn').disabled = true;
-  const stopBtn = document.getElementById('stopBtn');
+  runBtn.disabled = true;
   stopBtn.classList.add('visible');
   stopBtn.disabled = false;
   stopBtn.innerHTML = '<span>■ Stop</span>';
@@ -1140,7 +1249,7 @@ async function runAnalysis() {
   } else {
     log(`Analysis complete. ${results.length} institutions processed.`, 'ok');
   }
-  document.getElementById('runBtn').disabled = false;
+  runBtn.disabled = false;
   stopBtn.classList.remove('visible');
   stopBtn.disabled = false;
   stopBtn.innerHTML = '<span>■ Stop</span>';
