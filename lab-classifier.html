@@ -537,7 +537,6 @@
   .badge-processing { background: rgba(0,144,255,0.1); border: 1px solid rgba(0,144,255,0.3); color: var(--accent2); }
   .badge-done { background: rgba(0,229,160,0.08); border: 1px solid rgba(0,229,160,0.25); color: var(--accent); }
   .badge-error { background: rgba(204,34,34,0.07); border: 1px solid rgba(204,34,34,0.2); color: #cc2222; }
-  .badge-pass1 { background: rgba(26,111,196,0.07); border: 1px solid rgba(26,111,196,0.2); color: var(--accent2); }
   .badge-pending { background: var(--surface2); border: 1px solid var(--border); color: var(--text-dim); }
 
   .lab-card-body { padding: 20px 24px; }
@@ -822,9 +821,8 @@
       <input id="apiKeyInput" type="password" placeholder="sk-ant-... (required when running outside claude.ai)" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);font-family:'DM Mono',monospace;font-size:13px;padding:10px 12px;outline:none;transition:border-color 0.2s;" onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'">
     </div>
     <div style="font-size:11px;color:var(--text-dim);line-height:1.6;max-width:320px;">
-      <strong style="color:var(--text-muted)">claude.ai</strong> — leave blank, key is injected automatically.<br>
-      <strong style="color:var(--text-muted)">localhost</strong> — leave blank, key is read from your server.<br>
-      <strong style="color:var(--text-muted)">Hosted/other</strong> — paste your key from <a href="https://console.anthropic.com/settings/keys" target="_blank" style="color:var(--accent2)">console.anthropic.com</a>.
+      Running inside <strong style="color:var(--text-muted)">claude.ai</strong>? No key needed — injected automatically.<br>
+      Running <strong style="color:var(--text-muted)">standalone</strong>? Paste your key from <a href="https://console.anthropic.com/settings/keys" target="_blank" style="color:var(--accent2)">console.anthropic.com</a>.
     </div>
   </div>
 
@@ -895,7 +893,7 @@
           <button class="filter-btn" data-filter="infectious" onclick="applyFilter('infectious',this)">16S/INFECTIOUS</button>
           <button class="filter-btn" data-filter="ngs" onclick="applyFilter('ngs',this)">NGS</button>
         </div>
-        <button class="btn-export" onclick="exportResults()">⬇ Export Excel</button>
+        <button class="btn-export" onclick="exportResults()">⬇ Export CSV</button>
       </div>
     </div>
 
@@ -1033,21 +1031,34 @@ async function runAnalysis() {
   document.getElementById('logFeed').innerHTML = '';
   results = [];
 
-  const maxRetries = 3;
+  log(`Starting analysis of ${institutions.length} institutions`, 'info');
 
-  log(`Starting analysis of ${institutions.length} institutions (2 passes each)`, 'info');
+  for (let i = 0; i < institutions.length; i++) {
+    if (stopRequested) break;
+    const inst = institutions[i];
+    updateProgress(i, institutions.length);
+    log(`Analyzing: ${inst.name}${inst.location ? ' ('+inst.location+')' : ''}`, 'info');
 
-  async function runWithRetry(fn, label) {
+    let success = false;
     let retries = 0;
-    while (retries <= maxRetries) {
-      if (stopRequested) return null;
+    const maxRetries = 3;
+
+    while (!success && retries <= maxRetries) {
       try {
-        return await fn();
+        const result = await analyzeInstitution(inst.name, inst.location);
+        results.push({ ...inst, ...result, status: 'done' });
+        log(`✓ ${inst.name} — complete`, 'ok');
+        success = true;
       } catch (err) {
         const errStr = err.message || String(err);
+
+        // Parse rate limit reset time if available
+        // The API returns: { type: "rate_limit_error", message: "{\"type\":\"exceeded_limit\",\"resetsAt\":...}" }
+        // So we need to parse the outer JSON, then parse the nested message string.
         let rateLimitResetMs = null;
         try {
           let outer = JSON.parse(errStr);
+          // The resetsAt might be at the top level or nested in a stringified message
           let inner = outer;
           if (typeof outer.message === 'string') {
             try { inner = JSON.parse(outer.message); } catch(_) {}
@@ -1057,82 +1068,27 @@ async function runAnalysis() {
         } catch (_) {}
 
         if (rateLimitResetMs) {
-          log(`⏳ Rate limit hit. Waiting 60s before retrying ${label}…`, 'warn');
-          await interruptibleSleep(60000);
+          log(`⏳ Rate limit hit. Waiting 30s before retrying ${inst.name}…`, 'warn');
+          await interruptibleSleep(30000);
           retries++;
         } else if (retries < maxRetries) {
-          // Check if it's a 429 token-per-minute limit (has http_status 429 but no resetsAt)
-          let is429 = false;
-          try { is429 = JSON.parse(errStr).http_status === 429; } catch(_) {}
-          const backoff = is429 ? 60000 : 3000 * (retries + 1);
-          const backoffLabel = is429 ? '60s (token rate limit)' : `${backoff/1000}s`;
-          log(`↺ ${label} — retrying in ${backoffLabel} (attempt ${retries+1}/${maxRetries}) — error: ${errStr}`, 'warn');
+          // Generic error — short backoff and retry
+          const backoff = 3000 * (retries + 1);
+          log(`↺ ${inst.name} — retrying in ${backoff/1000}s (attempt ${retries+1}/${maxRetries})`, 'warn');
           await interruptibleSleep(backoff);
           retries++;
         } else {
-          log(`✗ ${label} — failed after ${maxRetries} retries: ${errStr}`, 'err');
-          return null;
+          results.push({ ...inst, status: 'error', error: errStr, solid_tumor: false, breast_gi_lung: false, hematology: false, infectious: false, ngs: false, ngs_platform: '', contacts: [] });
+          log(`✗ ${inst.name} — failed after ${maxRetries} retries: ${errStr.substring(0, 120)}`, 'err');
+          success = true; // exit loop
         }
       }
     }
-    return null;
-  }
 
-  for (let i = 0; i < institutions.length; i++) {
-    if (stopRequested) break;
-    const inst = institutions[i];
-    updateProgress(i, institutions.length);
-
-    // ---- PASS 1 ----
-    log(`[1/2] ${inst.name} — broad search…`, 'info');
-    const pass1 = await runWithRetry(
-      () => analyzeInstitution(inst.name, inst.location),
-      `${inst.name} pass 1`
-    );
-
-    if (!pass1) {
-      results.push({ ...inst, status: 'error', solid_tumor: false, breast_gi_lung: false, hematology: false, infectious: false, does_ngs: false, ngs_platform: '', contacts: [] });
-      updateProgress(i + 1, institutions.length);
-      if (i < institutions.length - 1 && !stopRequested) await interruptibleSleep(5000);
-      continue;
-    }
-
-    // Show pass 1 result immediately so user sees progress
-    results.push({ ...inst, ...pass1, status: 'pass1' });
-    renderResults();
-    log(`[1/2] ${inst.name} — pass 1 complete, starting deep search…`, 'ok');
-
-    if (stopRequested) break;
-
-    // Brief pause between passes
-    await interruptibleSleep(3000);
-
-    // ---- PASS 2 ----
-    log(`[2/2] ${inst.name} — targeted gap-fill search…`, 'info');
-    const pass2 = await runWithRetry(
-      () => refineInstitution(inst.name, inst.location, pass1),
-      `${inst.name} pass 2`
-    );
-
-    // Merge pass 2 into pass 1, preferring non-empty/non-N/A values from pass 2
-    const merged = mergeResults(pass1, pass2);
-
-    // Replace the pass1 entry in results with the merged final result
-    const idx = results.findIndex(r => r.name === inst.name && r.status === 'pass1');
-    if (idx !== -1) {
-      results[idx] = { ...inst, ...merged, status: 'done' };
-    } else {
-      results.push({ ...inst, ...merged, status: 'done' });
-    }
-
-    log(`✓ ${inst.name} — complete (both passes)`, 'ok');
-    renderResults();
     updateProgress(i + 1, institutions.length);
 
-    // Pause between institutions
-    if (i < institutions.length - 1 && !stopRequested) {
-      await interruptibleSleep(15000);
-    }
+    // Delay between institutions to respect rate limits
+    if (i < institutions.length - 1) await interruptibleSleep(3000);
   }
 
   if (stopRequested) {
@@ -1187,34 +1143,23 @@ async function analyzeInstitution(name, location) {
   const locationStr = location ? ` located in ${location}` : '';
   const prompt = `You are a scientific research tool. Analyze the institution "${name}"${locationStr}.
 
-Use web search to research this institution. Limit yourself to a maximum of 6 targeted searches total — prioritise the institution's own website, then LinkedIn/directory pages for contacts, then PubMed for NGS platform. Do not search broadly; each search should have a clear specific goal.
-
-Determine:
+Using your knowledge and web search capabilities, determine:
 
 1. TESTING CAPABILITIES (answer true/false for each):
    - solid_tumor_general: Does this lab/institution perform solid tumor testing (general oncology/pathology/molecular testing for tumors)?
    - breast_gi_lung: Does this lab specifically perform testing for breast cancer, GI (gastrointestinal) cancer, or lung cancer?
    - hematology: Does this lab perform hematology testing (blood cancers, leukemia, lymphoma, CBC, hematopathology)?
-   - infectious_16s: Does this lab perform ANY of the following: 16S rRNA sequencing, infectious disease testing, infectious disease molecular diagnostics, microbiology, virology, PCR-based pathogen detection, respiratory panels, STI testing, sepsis panels, or any other testing that identifies or characterizes infectious agents? Set to true if the lab performs ANY form of infectious disease diagnostics — the scope is intentionally broad.
-
-IMPORTANT — CONSISTENCY CHECK: Before finalising your JSON, re-read your testing_notes summary. If your summary mentions anything related to a category above, the corresponding boolean MUST be true. For example: if testing_notes mentions "infectious disease", "microbiology", "molecular diagnostics for pathogens", or similar — infectious must be true. If it mentions "oncology", "tumor", or "cancer testing" — solid_tumor must be true. Never leave a flag as false if your own summary contradicts it.
+   - infectious_16s: Does this lab perform 16S rRNA sequencing or infectious disease testing/microbiology?
 
 2. NGS (Next Generation Sequencing):
    - does_ngs: Does this lab perform next generation sequencing?
-   - ngs_platform: If yes, identify the specific instrument model(s) — not just the brand. Use ALL of the following search strategies:
-       a) Institution website: search "[institution name] sequencing platform", "[institution name] NGS", "[institution name] genomics core"
-       b) Published papers on PubMed: search "pubmed [institution name] next generation sequencing" or "pubmed [institution name] sequencing methods" — papers routinely name the exact instrument in their Methods section (e.g. "sequenced on an Illumina NovaSeq 6000", "using a PacBio Sequel IIe"). Check at least 2-3 recent papers.
-       c) Google Scholar or preprints: search "[institution name] sequencing site:biorxiv.org" or "[institution name] whole genome sequencing"
-     Specific models to look for: Illumina NovaSeq 6000/X, NextSeq 550/2000, MiSeq, HiSeq; PacBio Sequel II/IIe/Revio; Oxford Nanopore PromethION/MinION/GridION; Ion Torrent Genexus/S5; 10x Genomics Chromium; Element Biosciences AVITI; MGI DNBSEQ.
-     If multiple platforms are found, list all of them. If only the brand is found (e.g. "Illumina" without a model), state the brand. Say "Unknown" only after exhausting all search strategies above.
+   - ngs_platform: If yes, which specific platform(s) do they use? (e.g. Illumina NovaSeq, Illumina MiSeq, PacBio, Oxford Nanopore, Ion Torrent, 10x Genomics, etc.) Say "Unknown" if NGS is performed but platform not identifiable.
 
-3. CONTACTS: Search thoroughly to find at least 3 relevant contacts at this institution.
-   - PRIORITY ORDER: First list any Laboratory Director(s) or anyone with "Director" or "Laboratory" in their title. Then list pathologists, oncologists, genomics leads, research directors, department heads.
-   - Search the institution's website, faculty/staff directory, LinkedIn, and any published papers or press releases to find real names, emails, and direct phone numbers.
-   - For each contact you MUST attempt to find their email and phone — do not give up after one search. Try searching "[name] [institution] email", "[institution] staff directory", "[institution] contact us", etc.
-   - Email formats to try: firstname.lastname@institution.edu/com, flastname@institution.edu/com, or check the institution's published contact pages directly.
-   - Also find the general laboratory phone number (main switchboard or lab line, not a personal direct line). Search "[institution name] phone number", "[institution name] contact", or check their website's Contact Us page.
-   - Only mark email or phone as "N/A" after genuinely exhausting search attempts.
+3. CONTACTS: Find at least 3 relevant contacts at this institution. Look for:
+   - Lab directors, pathologists, oncologists, genomics leads, research directors, department heads
+   - For each contact provide: full name, title/role, email (if publicly available), phone (if publicly available)
+   - Use formats like name@institution.edu or publicly listed contact pages
+   - If specific individuals can't be found, list department contacts or general lab contact info
 
 Respond ONLY with valid JSON (no markdown, no backticks) in exactly this format:
 {
@@ -1224,9 +1169,7 @@ Respond ONLY with valid JSON (no markdown, no backticks) in exactly this format:
   "infectious": true or false,
   "does_ngs": true or false,
   "ngs_platform": "string or empty string",
-  "ngs_source": "where NGS platform info was found, e.g. \'PubMed: Smith et al. 2023\' or \'institution website\' or \'N/A\'",
   "testing_notes": "1-2 sentence summary of what this lab does",
-  "lab_phone": "general lab phone number or N/A",
   "contacts": [
     {
       "name": "Full Name",
@@ -1238,22 +1181,12 @@ Respond ONLY with valid JSON (no markdown, no backticks) in exactly this format:
   "sources": ["url1", "url2"]
 }`;
 
-  // Auto-detect environment:
-  // - localhost → route through local proxy server at /api (avoids CORS, key held server-side)
-  // - elsewhere (claude.ai, hosted) → call Anthropic directly (key injected by platform or entered manually)
-  const manualKey = getApiKey();
-  // Use the local proxy (/api) whenever no manual key is provided.
-  // This covers localhost, Railway, and any other hosted environment.
-  // Only call Anthropic directly if the user has explicitly entered their own API key.
-  const apiUrl = manualKey ? 'https://api.anthropic.com/v1/messages' : '/api';
-  const extraHeaders = manualKey ? { "x-api-key": manualKey } : {};
-
-  const response = await fetch(apiUrl, {
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...extraHeaders },
+    headers: { "Content-Type": "application/json", ...(getApiKey() ? { "x-api-key": getApiKey() } : {}) },
     body: JSON.stringify({
       model: "claude-sonnet-4-20250514",
-      max_tokens: 4000,
+      max_tokens: 1000,
       tools: [{ type: "web_search_20250305", name: "web_search" }],
       messages: [{ role: "user", content: prompt }]
     })
@@ -1261,207 +1194,35 @@ Respond ONLY with valid JSON (no markdown, no backticks) in exactly this format:
 
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));
-    const errPayload = err.error || err;
-    // Include HTTP status in the thrown error so it's visible in the log
-    throw new Error(JSON.stringify({ http_status: response.status, ...errPayload }));
+    // Throw the raw error object as a JSON string so callers can parse rate limit info
+    throw new Error(JSON.stringify(err.error || err));
   }
 
   const data = await response.json();
 
+  // Extract text from all content blocks
   const fullText = data.content
     .map(item => item.type === 'text' ? item.text : '')
     .filter(Boolean)
     .join('\n');
 
-  return await parseOrRetry(fullText, apiUrl, extraHeaders);
-}
-
-// ---- JSON PARSE WITH RETRY ----
-async function parseOrRetry(fullText, apiUrl, extraHeaders) {
-  // Attempt 1: strip markdown fences and extract first JSON object
-  const tryParse = text => {
-    const clean = text.replace(/```json|```/g, '').trim();
-    // Try the largest JSON object in the text (greedy match)
-    const match = clean.match(/\{[\s\S]*\}/);
-    if (!match) return null;
-    try { return JSON.parse(match[0]); } catch(_) { return null; }
-  };
-
-  const parsed = tryParse(fullText);
-  if (parsed) return parsed;
-
-  // Attempt 2: ask the model to re-emit just the JSON
-  console.warn('JSON not found in response, requesting clean re-emit. Raw text:', fullText.substring(0, 200));
+  // Parse JSON from response
   try {
-    const retryResponse = await fetch(apiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...extraHeaders },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 4000,
-        messages: [
-          { role: 'user', content: `You previously produced this output but it could not be parsed as JSON:\n\n${fullText}\n\nPlease re-emit ONLY the JSON object from your response — no explanation, no markdown, no backticks. Start your reply with { and end with }.` }
-        ]
-      })
-    });
-    if (retryResponse.ok) {
-      const retryData = await retryResponse.json();
-      const retryText = retryData.content.map(i => i.type === 'text' ? i.text : '').filter(Boolean).join('\n');
-      const retryParsed = tryParse(retryText);
-      if (retryParsed) return retryParsed;
-    }
-  } catch(e) {
-    console.warn('Re-emit attempt also failed:', e);
+    const clean = fullText.replace(/```json|```/g, '').trim();
+    // Find JSON object in response
+    const jsonMatch = clean.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('No JSON found in response');
+    return JSON.parse(jsonMatch[0]);
+  } catch (e) {
+    // Fallback: return partial data
+    console.warn('JSON parse error for', name, e, fullText);
+    return {
+      solid_tumor: false, breast_gi_lung: false, hematology: false,
+      infectious: false, does_ngs: false, ngs_platform: '',
+      testing_notes: 'Could not parse response. Raw: ' + fullText.substring(0, 100),
+      contacts: [], sources: []
+    };
   }
-
-  // Attempt 3: return a safe empty skeleton so the institution still appears in results
-  return {
-    solid_tumor: false, breast_gi_lung: false, hematology: false,
-    infectious: false, does_ngs: false, ngs_platform: '',
-    ngs_source: '', testing_notes: 'Could not parse response — try re-running this institution.',
-    lab_phone: 'N/A', contacts: [], sources: []
-  };
-}
-
-// ---- PASS 2: GAP-FILL SEARCH ----
-async function refineInstitution(name, location, prior) {
-  const locationStr = location ? ` located in ${location}` : '';
-
-  // Build a precise list of what's still missing from pass 1
-  const gaps = [];
-  if (!prior.ngs_platform || prior.ngs_platform === 'Unknown' || prior.ngs_platform === '') {
-    gaps.push('- NGS platform: not found yet. Search PubMed ("[institution] sequencing"), the institution website, and Google Scholar specifically for instrument model names (e.g. "Illumina NovaSeq", "PacBio", "Oxford Nanopore").');
-  }
-  const missingContactInfo = (prior.contacts || []).filter(c => c.email === 'N/A' || c.phone === 'N/A');
-  if (missingContactInfo.length > 0) {
-    const names = missingContactInfo.map(c => c.name).join(', ');
-    gaps.push(`- Missing contact details for: ${names}. Try searching each person's name + institution on LinkedIn, the institution staff directory, and published papers for email addresses.`);
-  }
-  if (!prior.lab_phone || prior.lab_phone === 'N/A') {
-    gaps.push('- General lab phone number: not found yet. Search "[institution name] phone", "[institution name] contact us", and check their website directly.');
-  }
-  if ((prior.contacts || []).length < 3) {
-    gaps.push('- Need more contacts: only ' + (prior.contacts||[]).length + ' found so far. Search for additional lab directors, pathologists, or department heads.');
-  }
-
-  const gapText = gaps.length > 0
-    ? 'Focus especially on filling these specific gaps from the first search:\n' + gaps.join('\n')
-    : 'All fields were found in the first pass. Verify the information is accurate and look for any additional contacts or NGS platform details that may have been missed.';
-
-  const prompt = `You are a scientific research tool doing a SECOND, deeper search pass on the institution "${name}"${locationStr}.
-
-A first search already found this information:
-${JSON.stringify(prior, null, 2)}
-
-${gapText}
-
-Do additional targeted web searches to find anything missing or improvable above. Then return a COMPLETE updated record — include everything from the first pass plus any new findings.
-
-IMPORTANT — CONSISTENCY CHECK: Re-read your testing_notes. If it mentions infectious disease, microbiology, molecular diagnostics, oncology, tumor, cancer, hematology, or NGS — the corresponding boolean must be true.
-
-Respond ONLY with valid JSON (no markdown, no backticks) in exactly this format:
-{
-  "solid_tumor": true or false,
-  "breast_gi_lung": true or false,
-  "hematology": true or false,
-  "infectious": true or false,
-  "does_ngs": true or false,
-  "ngs_platform": "string or empty string",
-  "ngs_source": "where NGS platform info was found",
-  "testing_notes": "1-2 sentence summary",
-  "lab_phone": "general lab phone number or N/A",
-  "contacts": [
-    {
-      "name": "Full Name",
-      "title": "Job Title",
-      "email": "email@domain.com or N/A",
-      "phone": "phone number or N/A"
-    }
-  ],
-  "sources": ["url1", "url2"]
-}`;
-
-  const manualKey = getApiKey();
-  // Use the local proxy (/api) whenever no manual key is provided.
-  // This covers localhost, Railway, and any other hosted environment.
-  // Only call Anthropic directly if the user has explicitly entered their own API key.
-  const apiUrl = manualKey ? 'https://api.anthropic.com/v1/messages' : '/api';
-  const extraHeaders = manualKey ? { "x-api-key": manualKey } : {};
-
-  const response = await fetch(apiUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...extraHeaders },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 4000,
-      tools: [{ type: "web_search_20250305", name: "web_search" }],
-      messages: [{ role: "user", content: prompt }]
-    })
-  });
-
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(JSON.stringify(err.error || err));
-  }
-
-  const data = await response.json();
-  const fullText = data.content.map(item => item.type === 'text' ? item.text : '').filter(Boolean).join('\n');
-
-  return await parseOrRetry(fullText, apiUrl, extraHeaders);
-}
-
-// ---- MERGE PASS 1 + PASS 2 ----
-function mergeResults(pass1, pass2) {
-  if (!pass2) return pass1;
-
-  // For booleans: true wins (if either pass found it, it's true)
-  const merged = {
-    solid_tumor:   pass1.solid_tumor   || pass2.solid_tumor,
-    breast_gi_lung: pass1.breast_gi_lung || pass2.breast_gi_lung,
-    hematology:    pass1.hematology    || pass2.hematology,
-    infectious:    pass1.infectious    || pass2.infectious,
-    does_ngs:      pass1.does_ngs      || pass2.does_ngs,
-    // For strings: prefer pass2 if it's more informative than pass1
-    ngs_platform:  betterString(pass1.ngs_platform, pass2.ngs_platform),
-    ngs_source:    betterString(pass1.ngs_source,   pass2.ngs_source),
-    testing_notes: betterString(pass1.testing_notes, pass2.testing_notes),
-    lab_phone:     betterString(pass1.lab_phone,     pass2.lab_phone),
-    sources:       mergeArrayUnique(pass1.sources || [], pass2.sources || []),
-    // For contacts: merge by name, filling in missing fields from each pass
-    contacts:      mergeContacts(pass1.contacts || [], pass2.contacts || []),
-  };
-  return merged;
-}
-
-function betterString(a, b) {
-  const isBlank = s => !s || s === 'N/A' || s === 'Unknown' || s.trim() === '';
-  if (isBlank(a) && !isBlank(b)) return b;
-  if (!isBlank(a) && isBlank(b)) return a;
-  // Both have values — prefer the longer/more detailed one
-  if (!isBlank(a) && !isBlank(b)) return b.length >= a.length ? b : a;
-  return a || b || '';
-}
-
-function mergeArrayUnique(a, b) {
-  return [...new Set([...a, ...b])];
-}
-
-function mergeContacts(contacts1, contacts2) {
-  const merged = [...contacts1];
-  for (const c2 of contacts2) {
-    const existing = merged.find(c1 =>
-      c1.name && c2.name && c1.name.toLowerCase() === c2.name.toLowerCase()
-    );
-    if (existing) {
-      // Fill in missing fields from pass 2
-      if (!existing.email || existing.email === 'N/A') existing.email = c2.email;
-      if (!existing.phone || existing.phone === 'N/A') existing.phone = c2.phone;
-      if (!existing.title || existing.title === 'N/A') existing.title = c2.title;
-    } else {
-      merged.push(c2); // new contact found in pass 2
-    }
-  }
-  return merged;
 }
 
 // ---- RENDER RESULTS ----
@@ -1530,13 +1291,6 @@ function buildCard(r, idx) {
     <div class="ngs-platform">
       <div class="ngs-platform-label">NGS Platform</div>
       <div class="ngs-platform-value">${r.ngs_platform || 'Platform not identified'}</div>
-      ${r.ngs_source && r.ngs_source !== 'N/A' ? `<div style="font-size:10px;color:var(--text-dim);margin-top:4px;">Source: ${escapeHtml(r.ngs_source)}</div>` : ''}
-    </div>` : '';
-
-  const labPhoneHtml = (r.lab_phone && r.lab_phone !== 'N/A') ? `
-    <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">
-      <span style="color:var(--text-dim);text-transform:uppercase;letter-spacing:0.5px;font-size:10px;">Lab Phone</span><br>
-      <a href="tel:${r.lab_phone}" style="color:var(--accent2);text-decoration:none;">${escapeHtml(r.lab_phone)}</a>
     </div>` : '';
 
   const notesHtml = r.testing_notes ? `
@@ -1552,8 +1306,8 @@ function buildCard(r, idx) {
         <div class="lab-name">${escapeHtml(r.name)}</div>
         ${r.location ? `<div class="lab-location">📍 ${escapeHtml(r.location)}</div>` : ''}
       </div>
-      <span class="lab-status-badge ${r.status === 'done' ? 'badge-done' : r.status === 'error' ? 'badge-error' : r.status === 'pass1' ? 'badge-pass1' : 'badge-pending'}">
-        ${r.status === 'done' ? '✓ Complete' : r.status === 'error' ? '✗ Error' : r.status === 'pass1' ? '⟳ Pass 2…' : 'Pending'}
+      <span class="lab-status-badge ${r.status === 'done' ? 'badge-done' : r.status === 'error' ? 'badge-error' : 'badge-pending'}">
+        ${r.status === 'done' ? '✓ Done' : r.status === 'error' ? '✗ Error' : 'Pending'}
       </span>
     </div>
     <div class="lab-card-body">
@@ -1565,7 +1319,6 @@ function buildCard(r, idx) {
         </div>
       </div>
       ${ngsPlatformHtml}
-      ${labPhoneHtml}
       ${contacts.length > 0 ? `
       <div class="contacts-section">
         <div class="contacts-label">Key Contacts (${contacts.length})</div>
@@ -1601,10 +1354,9 @@ function applyFilter(filter, btn) {
 
 function exportResults() {
   if (!results.length) return;
-
-  const rows = [['Institution', 'Location', 'Solid Tumor (General)', 'Breast/GI/Lung', 'Hematology', '16S/Infectious', 'NGS', 'NGS Platform', 'NGS Platform Source', 'Testing Notes', 'Lab Phone', 'Contact 1 Name', 'Contact 1 Title', 'Contact 1 Email', 'Contact 1 Phone', 'Contact 2 Name', 'Contact 2 Title', 'Contact 2 Email', 'Contact 2 Phone', 'Contact 3 Name', 'Contact 3 Title', 'Contact 3 Email', 'Contact 3 Phone']];
+  const rows = [['Institution', 'Location', 'Solid Tumor (General)', 'Breast/GI/Lung', 'Hematology', '16S/Infectious', 'NGS', 'NGS Platform', 'Testing Notes', 'Contact 1 Name', 'Contact 1 Title', 'Contact 1 Email', 'Contact 1 Phone', 'Contact 2 Name', 'Contact 2 Title', 'Contact 2 Email', 'Contact 2 Phone', 'Contact 3 Name', 'Contact 3 Title', 'Contact 3 Email', 'Contact 3 Phone']];
   results.forEach(r => {
-    const ct = r.contacts || [];
+    const c = r.contacts || [];
     rows.push([
       r.name, r.location || '',
       r.solid_tumor ? 'Yes' : 'No',
@@ -1613,35 +1365,18 @@ function exportResults() {
       r.infectious ? 'Yes' : 'No',
       r.does_ngs ? 'Yes' : 'No',
       r.ngs_platform || '',
-      r.ngs_source || '',
       r.testing_notes || '',
-      r.lab_phone || '',
-      ct[0]?.name||'', ct[0]?.title||'', ct[0]?.email||'', ct[0]?.phone||'',
-      ct[1]?.name||'', ct[1]?.title||'', ct[1]?.email||'', ct[1]?.phone||'',
-      ct[2]?.name||'', ct[2]?.title||'', ct[2]?.email||'', ct[2]?.phone||''
+      c[0]?.name||'', c[0]?.title||'', c[0]?.email||'', c[0]?.phone||'',
+      c[1]?.name||'', c[1]?.title||'', c[1]?.email||'', c[1]?.phone||'',
+      c[2]?.name||'', c[2]?.title||'', c[2]?.email||'', c[2]?.phone||''
     ]);
   });
-
-  // Build XLSX using SheetJS
-  const ws = XLSX.utils.aoa_to_sheet(rows);
-
-  // Style header row bold by setting cell metadata (SheetJS supports this via !cols width hints)
-  const colWidths = rows[0].map((h, i) => ({
-    wch: Math.max(h.length, ...rows.slice(1).map(r => String(r[i]||'').length), 10)
-  }));
-  ws['!cols'] = colWidths;
-
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'LabScope Results');
-
-  // Write to base64 and trigger download via data URI (works in sandboxed iframes)
-  const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'base64' });
+  const csv = rows.map(r => r.map(cell => `"${String(cell).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
   const a = document.createElement('a');
-  a.href = 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,' + wbout;
-  a.download = 'labscope_results.xlsx';
-  document.body.appendChild(a);
+  a.href = URL.createObjectURL(blob);
+  a.download = 'labscope_results.csv';
   a.click();
-  document.body.removeChild(a);
 }
 </script>
 </body>
